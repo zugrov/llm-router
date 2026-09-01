@@ -20,8 +20,17 @@ cfo-autopilot backend --(POST /v1/complete + X-Internal-Secret)--> llm-router --
     мог обращаться по имени контейнера `http://llm-router:8000`;
   - `llm_router_internal` (создаётся этим compose-файлом, `internal: true`) — для связи с
     собственным Postgres.
-- `db` (Postgres) подключён **только** к `llm_router_internal`. Без `ports:` — недоступен ни
-  с хоста, ни из `cfo_autopilot_default`, только из контейнера `llm-router` по DNS-имени `db`.
+- `llm-router-db` (Postgres) подключён **только** к `llm_router_internal`. Без `ports:` —
+  недоступен ни с хоста, ни из `cfo_autopilot_default`, только из контейнера `llm-router` по
+  DNS-имени `llm-router-db`.
+  > **Важно:** сервис намеренно называется `llm-router-db`, а не просто `db`. На VPS уже
+  > крутится `cfo_autopilot-db-1` (сервис `db` в `docker-compose.prod.yml` cfo-autopilot) в
+  > сети `cfo_autopilot_default`. Так как `llm-router` app подключён к этой же сети, короткое
+  > имя `db` резолвилось бы в ЧУЖОЙ Postgres cfo-autopilot (embedded Docker DNS не изолирует
+  > алиасы по compose-проекту в рамках одной сети) — было поймано на этапе деплоя как
+  > `asyncpg.exceptions.InvalidPasswordError` (роли `llm_router` в чужой БД просто нет).
+  > При подключении следующих MVP (grill, maxima) к общей сети используйте такие же
+  > project-scoped имена сервисов, а не generic `db`/`redis`/`app`.
 - `llm-router` не публикует порт на хост — только `expose: 8000`. Проверка health и любые
   ручные запросы делаются изнутри docker-сети:
   ```bash

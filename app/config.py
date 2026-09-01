@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     allowed_projects: str = "cfo-autopilot"
 
     # Postgres (только request_log, без сырого prompt/response)
-    database_url: str = "postgresql+asyncpg://llm_router:llm_router@db:5432/llm_router"
+    database_url: str = "postgresql+asyncpg://llm_router:llm_router@llm-router-db:5432/llm_router"
 
     @property
     def allowed_projects_set(self) -> set[str]:
