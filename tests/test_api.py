@@ -4,7 +4,12 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.upstream import CompletionResult, NonRetryableUpstreamError, UpstreamExhaustedError
+from app.upstream import (
+    CompletionResult,
+    NonRetryableUpstreamError,
+    StreamChunk,
+    UpstreamExhaustedError,
+)
 from .conftest import AUTH_HEADERS
 
 SECRET_PROMPT = "СЕКРЕТНЫЙ_ТЕКСТ_КОТОРОГО_НЕ_ДОЛЖНО_БЫТЬ_В_ЛОГАХ"
@@ -49,7 +54,12 @@ class TestAllowlist:
         with patch("app.upstream._client.chat.completions.create", new=AsyncMock()):
             resp = await client.post(
                 "/v1/complete",
-                json={"project": "grill", "task_type": "extraction", "system": "s", "prompt": "p"},
+                json={
+                    "project": "unknown-project",
+                    "task_type": "extraction",
+                    "system": "s",
+                    "prompt": "p",
+                },
                 headers=AUTH_HEADERS,
             )
         assert resp.status_code == 403
@@ -57,6 +67,34 @@ class TestAllowlist:
 
 
 class TestRequestSchema:
+    @pytest.mark.asyncio
+    async def test_neither_messages_nor_system_prompt_rejected(self, client):
+        resp = await client.post(
+            "/v1/complete",
+            json={"project": "cfo-autopilot", "task_type": "chat"},
+            headers=AUTH_HEADERS,
+        )
+        assert resp.status_code == 422
+
+    @pytest.mark.asyncio
+    async def test_messages_request_accepted(self, client):
+        with patch("app.main.complete", new=AsyncMock(return_value=_ok_result())):
+            resp = await client.post(
+                "/v1/complete",
+                json={
+                    "project": "grill",
+                    "task_type": "chat",
+                    "messages": [
+                        {"role": "system", "content": "sys"},
+                        {"role": "user", "content": "turn 1"},
+                        {"role": "assistant", "content": "reply 1"},
+                        {"role": "user", "content": "turn 2"},
+                    ],
+                },
+                headers=AUTH_HEADERS,
+            )
+        assert resp.status_code == 200
+
     @pytest.mark.asyncio
     async def test_extra_field_model_rejected(self, client):
         resp = await client.post(
@@ -191,6 +229,65 @@ class TestNoSecretsInLogs:
         assert resp.status_code == 502
         assert SECRET_PROMPT not in caplog.text
         assert AUTH_HEADERS["X-Internal-Secret"] not in caplog.text
+
+
+class TestCompleteStream:
+    @pytest.mark.asyncio
+    async def test_missing_secret_401(self, client):
+        resp = await client.post(
+            "/v1/complete/stream",
+            json={"project": "grill", "task_type": "chat", "system": "s", "prompt": "p"},
+        )
+        assert resp.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_project_not_in_allowlist_403(self, client):
+        resp = await client.post(
+            "/v1/complete/stream",
+            json={"project": "unknown-project", "task_type": "chat", "system": "s", "prompt": "p"},
+            headers=AUTH_HEADERS,
+        )
+        assert resp.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_success_streams_deltas_and_done(self, client):
+        async def fake_stream(*_args, **_kwargs):
+            yield StreamChunk(delta="Hel")
+            yield StreamChunk(delta="lo")
+            yield StreamChunk(done=True, result=_ok_result())
+
+        with patch("app.main.stream_complete", new=fake_stream):
+            async with client.stream(
+                "POST",
+                "/v1/complete/stream",
+                json={"project": "grill", "task_type": "chat", "system": "s", "prompt": "p"},
+                headers=AUTH_HEADERS,
+            ) as resp:
+                assert resp.status_code == 200
+                body = "".join([chunk async for chunk in resp.aiter_text()])
+        assert '"delta": "Hel"' in body
+        assert '"delta": "lo"' in body
+        assert '"done": true' in body
+
+    @pytest.mark.asyncio
+    async def test_error_mid_stream_emits_error_event_not_500(self, client):
+        async def fake_stream(*_args, **_kwargs):
+            yield StreamChunk(delta="partial")
+            yield StreamChunk(error=UpstreamExhaustedError(503, "boom"))
+
+        with patch("app.main.stream_complete", new=fake_stream):
+            async with client.stream(
+                "POST",
+                "/v1/complete/stream",
+                json={"project": "grill", "task_type": "chat", "system": "s", "prompt": "p"},
+                headers=AUTH_HEADERS,
+            ) as resp:
+                assert resp.status_code == 200
+                body = "".join([chunk async for chunk in resp.aiter_text()])
+        assert '"delta": "partial"' in body
+        assert '"error": true' in body
+        assert '"error_code": "MODEL_UNAVAILABLE"' in body
+        assert "boom" not in body
 
 
 class TestHealth:

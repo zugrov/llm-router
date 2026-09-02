@@ -21,6 +21,14 @@ class Settings(BaseSettings):
     model_financial_analysis_primary: str = "anthropic/claude-sonnet-5"
     model_financial_analysis_fallback: str = "deepseek/deepseek-v4-pro-0813"
 
+    # chat — многоходовые диалоги (сейчас: grill, пошаговая генерация бизнес-плана)
+    model_chat_primary: str = "deepseek/deepseek-v4-flash"
+    model_chat_fallback: str = "z-ai/glm-5.3-flash"
+
+    # client_report — одноразовая генерация PDF-отчёта для конечного клиента (сейчас: maxima consulting)
+    model_client_report_primary: str = "anthropic/claude-sonnet-5"
+    model_client_report_fallback: str = "deepseek/deepseek-v4-pro-0813"
+
     # Reasoning-модели тратят часть max_tokens на рассуждения до content —
     # для них увеличиваем запрошенный max_tokens и проверяем на пустой ответ (см. upstream.py)
     reasoning_models: str = "deepseek/deepseek-v4-pro-0813"
@@ -29,8 +37,8 @@ class Settings(BaseSettings):
     # Auth между сервисами (X-Internal-Secret, сверяется через secrets.compare_digest)
     internal_secret: str = ""
 
-    # Allowlist проектов-потребителей — в v1 разрешён только cfo-autopilot
-    allowed_projects: str = "cfo-autopilot"
+    # Allowlist проектов-потребителей
+    allowed_projects: str = "cfo-autopilot,grill,maxima-consulting"
 
     # Postgres (только request_log, без сырого prompt/response)
     database_url: str = "postgresql+asyncpg://llm_router:llm_router@llm-router-db:5432/llm_router"

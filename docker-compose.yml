@@ -9,8 +9,13 @@ services:
       - .env
     expose:
       - "8000"
+    ports:
+      # Только 127.0.0.1 — доступ для consulting-agent (systemd-сервис на хосте, не в Docker).
+      # Наружу (0.0.0.0) не публикуем — за это отвечает allowlist + X-Internal-Secret, а не сеть.
+      - "127.0.0.1:8020:8000"
     networks:
       - cfo_autopilot_default
+      - grill-ideas_default
       - llm_router_internal
     depends_on:
       llm-router-db:
@@ -52,6 +57,8 @@ services:
 
 networks:
   cfo_autopilot_default:
+    external: true
+  grill-ideas_default:
     external: true
   llm_router_internal:
     internal: true

@@ -14,9 +14,15 @@
 - Reasoning-модели (напр. deepseek-v4-pro-0813) могут потратить весь max_tokens на reasoning
   и вернуть пустой content с finish_reason="length" при HTTP 200 — это техническая ошибка,
   приравниваем к сбою, требующему переключения модели.
+
+Стриминг (stream_complete) следует той же политике с одним отличием: fallback/retry
+возможен только пока клиенту не отдано ни одного chunk. После первого chunk откат
+модели невозможен (клиент уже увидел частичный ответ) — при сбое поток завершается
+событием ошибки.
 """
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from enum import Enum
 
@@ -112,7 +118,7 @@ def _extract_cost(usage: object) -> float | None:
     return float(cost) if isinstance(cost, (int, float)) else None
 
 
-async def _call_model(model: str, system: str, prompt: str, max_tokens: int) -> CompletionResult:
+async def _call_model(model: str, messages: list[dict[str, str]], max_tokens: int) -> CompletionResult:
     """Один внешний HTTP-вызов к RouterAI под конкретной моделью, без ретраев внутри."""
     request_max_tokens = max_tokens
     if _is_reasoning_model(model):
@@ -120,10 +126,7 @@ async def _call_model(model: str, system: str, prompt: str, max_tokens: int) -> 
 
     response = await _client.chat.completions.create(
         model=model,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
-        ],
+        messages=messages,
         max_tokens=request_max_tokens,
     )
 
@@ -149,7 +152,7 @@ async def _call_model(model: str, system: str, prompt: str, max_tokens: int) -> 
     )
 
 
-async def complete(task_type: str, system: str, prompt: str, max_tokens: int) -> CompletionResult:
+async def complete(task_type: str, messages: list[dict[str, str]], max_tokens: int) -> CompletionResult:
     """
     Оркестрирует вызов RouterAI с retry/fallback по политике модуля:
     максимум 2 модели (primary, fallback), максимум 3 внешних запроса суммарно.
@@ -166,7 +169,7 @@ async def complete(task_type: str, system: str, prompt: str, max_tokens: int) ->
     for model, max_attempts in ((pair.primary, 2), (pair.fallback, 1)):
         for attempt in range(max_attempts):
             try:
-                result = await _call_model(model, system, prompt, max_tokens)
+                result = await _call_model(model, messages, max_tokens)
                 result.model_requested = pair.primary
                 return result
             except Exception as exc:  # классифицируем ниже по типу исключения OpenAI SDK
@@ -179,3 +182,94 @@ async def complete(task_type: str, system: str, prompt: str, max_tokens: int) ->
                 break  # переходим к следующей модели (primary -> fallback)
 
     raise UpstreamExhaustedError(last_status, last_message)
+
+
+@dataclass
+class StreamChunk:
+    """Событие потока: либо текстовая дельта, либо финальный результат, либо ошибка."""
+
+    delta: str | None = None
+    done: bool = False
+    error: Exception | None = None
+    result: CompletionResult | None = None
+
+
+async def stream_complete(
+    task_type: str, messages: list[dict[str, str]], max_tokens: int
+) -> AsyncIterator[StreamChunk]:
+    """
+    Стриминговый аналог complete(). Retry/fallback работает только до первого
+    отданного клиенту chunk'а — после этого при сбое поток завершается StreamChunk(error=...).
+    """
+    pair = resolve_models(task_type)
+    if pair is None:
+        yield StreamChunk(error=NonRetryableUpstreamError(None, f"неизвестный или нереализованный task_type: {task_type}"))
+        return
+
+    last_status: int | None = None
+    last_message = "unknown error"
+    chunks_emitted = 0
+
+    for model, max_attempts in ((pair.primary, 2), (pair.fallback, 1)):
+        for attempt in range(max_attempts):
+            request_max_tokens = max_tokens
+            if _is_reasoning_model(model):
+                request_max_tokens = max_tokens + settings.reasoning_token_buffer
+
+            content_parts: list[str] = []
+            usage = None
+            try:
+                stream = await _client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    max_tokens=request_max_tokens,
+                    stream=True,
+                    stream_options={"include_usage": True},
+                )
+                async for event in stream:
+                    if event.usage is not None:
+                        usage = event.usage
+                    if not event.choices:
+                        continue
+                    delta = event.choices[0].delta.content or ""
+                    if delta:
+                        content_parts.append(delta)
+                        chunks_emitted += 1
+                        yield StreamChunk(delta=delta)
+
+                content = "".join(content_parts).strip()
+                if not content:
+                    raise EmptyReasoningOutputError(
+                        f"model={model}: пустой content в потоке "
+                        f"(не хватило max_tokens={request_max_tokens} на reasoning)"
+                    )
+
+                yield StreamChunk(
+                    done=True,
+                    result=CompletionResult(
+                        content=content,
+                        model_requested=pair.primary,
+                        model_actual=model,
+                        input_tokens=(getattr(usage, "prompt_tokens", 0) or 0) if usage else 0,
+                        output_tokens=(getattr(usage, "completion_tokens", 0) or 0) if usage else 0,
+                        total_tokens=(getattr(usage, "total_tokens", 0) or 0) if usage else 0,
+                        estimated_cost_rub=_extract_cost(usage),
+                        cost_source="routerai_response" if _extract_cost(usage) is not None else "unavailable",
+                    ),
+                )
+                return
+            except Exception as exc:
+                if chunks_emitted > 0:
+                    # Клиент уже получил часть ответа — сменить модель нельзя, поток завершаем ошибкой.
+                    yield StreamChunk(error=exc)
+                    return
+                action, status_code = classify_exception(exc)
+                last_status, last_message = status_code, str(exc)
+                if action == ErrorAction.NON_RETRYABLE:
+                    yield StreamChunk(error=NonRetryableUpstreamError(status_code, str(exc)))
+                    return
+                if action == ErrorAction.RETRY_SAME and attempt == 0:
+                    continue
+                break
+
+    yield StreamChunk(error=UpstreamExhaustedError(last_status, last_message))

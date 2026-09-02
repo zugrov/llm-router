@@ -32,21 +32,32 @@ class TestDockerComposeTopology:
             "имя сервиса 'db' занято cfo_autopilot-db-1 в сети cfo_autopilot_default"
         )
 
-    def test_app_has_no_published_ports_only_expose(self):
+    def test_app_publishes_only_localhost_port_for_consulting(self):
+        """consulting-agent — systemd-процесс на хосте VPS (не в Docker), ему нужен порт на
+        127.0.0.1. Публикация на 0.0.0.0 запрещена — это единственная защита от внешнего
+        доступа в обход allowlist + X-Internal-Secret."""
         compose = _load_compose()
         app = compose["services"]["llm-router"]
-        assert "ports" not in app, "llm-router не должен публиковать порт на хост"
         assert app.get("expose") == ["8000"]
+        ports = app.get("ports", [])
+        assert len(ports) == 1
+        assert ports[0].startswith("127.0.0.1:"), "порт должен публиковаться только на localhost"
 
-    def test_app_on_both_networks(self):
+    def test_app_on_all_required_networks(self):
         compose = _load_compose()
         app_networks = compose["services"]["llm-router"]["networks"]
         assert "cfo_autopilot_default" in app_networks
+        assert "grill-ideas_default" in app_networks
         assert "llm_router_internal" in app_networks
 
     def test_cfo_autopilot_network_is_external(self):
         compose = _load_compose()
         network = compose["networks"]["cfo_autopilot_default"]
+        assert network.get("external") is True
+
+    def test_grill_network_is_external(self):
+        compose = _load_compose()
+        network = compose["networks"]["grill-ideas_default"]
         assert network.get("external") is True
 
     def test_internal_network_is_internal(self):
