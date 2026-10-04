@@ -50,6 +50,29 @@ Retry/fallback на другую модель в стриме возможен �
   docker run --rm --network cfo_autopilot_default curlimages/curl -f http://llm-router:8000/health
   ```
 
+## Модели
+
+Идентификаторы в `.env` — алиасы RouterAI (`~вендор/линейка-latest`). Префикс `~` говорит
+роутеру, что это не конкретный релиз, суффикс `-latest` всегда указывает на самый свежий
+релиз линейки. При выходе новой версии конфиг, релиз сервиса и перезапуск не нужны:
+следующий запрос уже уйдёт в актуальный релиз.
+
+`model_actual` в ответе и в `request_log` — слаг, который вернул RouterAI (конкретный релиз,
+если апстрим его прислал). `model_requested` — алиас primary из таблицы маршрутизации.
+
+Каталог: https://routerai.ru/models?q=latest
+
+| task_type | primary | fallback |
+|---|---|---|
+| extraction | `~z-ai/glm-flash-latest` | `~deepseek/deepseek-v4-pro-latest` |
+| financial_analysis | `~anthropic/claude-sonnet-latest` | `~deepseek/deepseek-v4-pro-latest` |
+| chat | `~deepseek/deepseek-v4-flash-latest` | `~z-ai/glm-flash-latest` |
+| client_report | `~anthropic/claude-sonnet-latest` | `~deepseek/deepseek-v4-pro-latest` |
+
+`REASONING_MODELS` должен содержать тот же id, что уходит в запрос. Для алиаса это
+`~deepseek/deepseek-v4-pro-latest`: запас `REASONING_TOKEN_BUFFER` применяется до вызова,
+по строке алиаса, а не по слагу релиза.
+
 ## Запуск
 
 ```bash
