@@ -17,8 +17,8 @@ from app.upstream import (
     stream_complete,
 )
 
-PRIMARY = "z-ai/glm-5.3-flash"
-FALLBACK = "deepseek/deepseek-v4-pro-0813"
+PRIMARY = "~z-ai/glm-flash-latest"
+FALLBACK = "~deepseek/deepseek-v4-pro-latest"
 MESSAGES = [{"role": "system", "content": "sys"}, {"role": "user", "content": "prompt"}]
 
 
@@ -118,6 +118,36 @@ class TestCallModelEmptyReasoning:
             result = await _call_model(PRIMARY, MESSAGES, 20)
             assert result.estimated_cost_rub == pytest.approx(0.10128836718)
             assert result.cost_source == "routerai_response"
+
+    @pytest.mark.asyncio
+    async def test_alias_stores_concrete_release_from_response(self):
+        response = _fake_response(content="ok")
+        response.model = "deepseek/deepseek-v4-pro-0813"
+        with patch("app.upstream._client") as mock_client:
+            mock_client.chat.completions.create = AsyncMock(return_value=response)
+            result = await _call_model(FALLBACK, MESSAGES, 100)
+            _, kwargs = mock_client.chat.completions.create.call_args
+            assert kwargs["model"] == FALLBACK
+            assert result.model_requested == FALLBACK
+            assert result.model_actual == "deepseek/deepseek-v4-pro-0813"
+
+    @pytest.mark.asyncio
+    async def test_reasoning_alias_increases_max_tokens(self):
+        response = _fake_response(content="ok")
+        with patch("app.upstream._client") as mock_client:
+            mock_client.chat.completions.create = AsyncMock(return_value=response)
+            await _call_model(FALLBACK, MESSAGES, 100)
+            _, kwargs = mock_client.chat.completions.create.call_args
+            assert kwargs["max_tokens"] == 1600
+
+    @pytest.mark.asyncio
+    async def test_non_reasoning_alias_keeps_max_tokens(self):
+        response = _fake_response(content="ok")
+        with patch("app.upstream._client") as mock_client:
+            mock_client.chat.completions.create = AsyncMock(return_value=response)
+            await _call_model(PRIMARY, MESSAGES, 100)
+            _, kwargs = mock_client.chat.completions.create.call_args
+            assert kwargs["max_tokens"] == 100
 
 
 class TestCompleteStateMachine:
@@ -232,7 +262,7 @@ class TestCompleteStateMachine:
         with patch("app.upstream._client") as mock_client:
             mock_client.chat.completions.create = AsyncMock(return_value=response)
             result = await complete("chat", MESSAGES, 100)
-            assert result.model_actual == "deepseek/deepseek-v4-flash"
+            assert result.model_actual == "~deepseek/deepseek-v4-flash-latest"
 
     @pytest.mark.asyncio
     async def test_client_report_task_type_uses_own_routing_table(self):
@@ -240,7 +270,7 @@ class TestCompleteStateMachine:
         with patch("app.upstream._client") as mock_client:
             mock_client.chat.completions.create = AsyncMock(return_value=response)
             result = await complete("client_report", MESSAGES, 100)
-            assert result.model_actual == "anthropic/claude-sonnet-5"
+            assert result.model_actual == "~anthropic/claude-sonnet-latest"
 
     @pytest.mark.asyncio
     async def test_multiturn_messages_passed_through_unchanged(self):
@@ -290,8 +320,22 @@ class TestStreamComplete:
         assert deltas == ["Hel", "lo"]
         assert events[-1].done is True
         assert events[-1].result.content == "Hello"
-        assert events[-1].result.model_actual == "deepseek/deepseek-v4-flash"
+        assert events[-1].result.model_actual == "~deepseek/deepseek-v4-flash-latest"
         assert events[-1].result.estimated_cost_rub == pytest.approx(0.001)
+
+    @pytest.mark.asyncio
+    async def test_stream_stores_concrete_release_from_chunks(self):
+        usage = SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15, cost=0.001)
+        first = _fake_chunk("Hel")
+        first.model = "~deepseek/deepseek-v4-flash-latest"
+        last = _fake_chunk(None, usage=usage)
+        last.model = "deepseek/deepseek-v4-flash"
+        stream = _FakeStream([first, _fake_chunk("lo"), last])
+        with patch("app.upstream._client") as mock_client:
+            mock_client.chat.completions.create = AsyncMock(return_value=stream)
+            events = [e async for e in stream_complete("chat", MESSAGES, 100)]
+        assert events[-1].result.model_requested == "~deepseek/deepseek-v4-flash-latest"
+        assert events[-1].result.model_actual == "deepseek/deepseek-v4-flash"
 
     @pytest.mark.asyncio
     async def test_error_before_first_chunk_falls_back_to_next_model(self):
@@ -303,7 +347,7 @@ class TestStreamComplete:
             )
             events = [e async for e in stream_complete("chat", MESSAGES, 100)]
         assert events[-1].done is True
-        assert events[-1].result.model_actual == "z-ai/glm-5.3-flash"
+        assert events[-1].result.model_actual == "~z-ai/glm-flash-latest"
 
     @pytest.mark.asyncio
     async def test_error_after_first_chunk_emits_error_and_stops(self):
@@ -344,7 +388,7 @@ class TestStreamComplete:
             events = [e async for e in stream_complete("chat", MESSAGES, 100)]
         # Пустой ответ primary -> переключились на fallback без единого delta клиенту.
         assert events[-1].done is True
-        assert events[-1].result.model_actual == "z-ai/glm-5.3-flash"
+        assert events[-1].result.model_actual == "~z-ai/glm-flash-latest"
 
     @pytest.mark.asyncio
     async def test_unknown_task_type_yields_single_error(self):

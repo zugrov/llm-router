@@ -15,23 +15,26 @@ class Settings(BaseSettings):
     routerai_api_key: str = ""
     routerai_base_url: str = "https://routerai.ru/api/v1"
 
-    # Модели по task_type: primary / fallback (см. routing.py)
-    model_extraction_primary: str = "z-ai/glm-5.3-flash"
-    model_extraction_fallback: str = "deepseek/deepseek-v4-pro-0813"
-    model_financial_analysis_primary: str = "anthropic/claude-sonnet-5"
-    model_financial_analysis_fallback: str = "deepseek/deepseek-v4-pro-0813"
+    # Модели по task_type: primary / fallback (см. routing.py).
+    # Алиас RouterAI (~линейка-latest) всегда указывает на актуальный релиз,
+    # конкретный слаг с датой или номером версии здесь не пинтится.
+    model_extraction_primary: str = "~z-ai/glm-flash-latest"
+    model_extraction_fallback: str = "~deepseek/deepseek-v4-pro-latest"
+    model_financial_analysis_primary: str = "~anthropic/claude-sonnet-latest"
+    model_financial_analysis_fallback: str = "~deepseek/deepseek-v4-pro-latest"
 
     # chat — многоходовые диалоги (сейчас: grill, пошаговая генерация бизнес-плана)
-    model_chat_primary: str = "deepseek/deepseek-v4-flash"
-    model_chat_fallback: str = "z-ai/glm-5.3-flash"
+    model_chat_primary: str = "~deepseek/deepseek-v4-flash-latest"
+    model_chat_fallback: str = "~z-ai/glm-flash-latest"
 
     # client_report — одноразовая генерация PDF-отчёта для конечного клиента (сейчас: maxima consulting)
-    model_client_report_primary: str = "anthropic/claude-sonnet-5"
-    model_client_report_fallback: str = "deepseek/deepseek-v4-pro-0813"
+    model_client_report_primary: str = "~anthropic/claude-sonnet-latest"
+    model_client_report_fallback: str = "~deepseek/deepseek-v4-pro-latest"
 
     # Reasoning-модели тратят часть max_tokens на рассуждения до content —
-    # для них увеличиваем запрошенный max_tokens и проверяем на пустой ответ (см. upstream.py)
-    reasoning_models: str = "deepseek/deepseek-v4-pro-0813"
+    # для них увеличиваем запрошенный max_tokens и проверяем на пустой ответ (см. upstream.py).
+    # Id должен совпадать с тем, что уходит в запрос: алиас или конкретный слаг.
+    reasoning_models: str = "~deepseek/deepseek-v4-pro-latest"
     reasoning_token_buffer: int = 1500
 
     # Auth между сервисами (X-Internal-Secret, сверяется через secrets.compare_digest)

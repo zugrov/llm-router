@@ -11,9 +11,9 @@
 - APITimeoutError/APIConnectionError означает, что неясно, дошёл ли запрос до RouterAI вообще ->
   даём ОДНУ повторную попытку той же модели, и только затем переключаем модель.
 - Лимиты на один request_id: максимум 2 разные модели, максимум 3 внешних запроса суммарно.
-- Reasoning-модели (напр. deepseek-v4-pro-0813) могут потратить весь max_tokens на reasoning
-  и вернуть пустой content с finish_reason="length" при HTTP 200 — это техническая ошибка,
-  приравниваем к сбою, требующему переключения модели.
+- Reasoning-модели (напр. ~deepseek/deepseek-v4-pro-latest) могут потратить весь max_tokens
+  на reasoning и вернуть пустой content с finish_reason="length" при HTTP 200.
+  Это техническая ошибка: приравниваем к сбою, требующему переключения модели.
 
 Стриминг (stream_complete) следует той же политике с одним отличием: fallback/retry
 возможен только пока клиенту не отдано ни одного chunk. После первого chunk откат
@@ -85,6 +85,14 @@ def _is_reasoning_model(model: str) -> bool:
     return model in settings.reasoning_models_set
 
 
+def _model_from_payload(payload: object) -> str | None:
+    """Слаг из ответа RouterAI. Для алиаса ~…-latest здесь приходит конкретный релиз."""
+    actual = getattr(payload, "model", None)
+    if isinstance(actual, str) and actual.strip():
+        return actual.strip()
+    return None
+
+
 def classify_exception(exc: Exception) -> tuple[ErrorAction, int | None]:
     """Классифицирует исключение OpenAI SDK по политике retry/fallback."""
     if isinstance(exc, EmptyReasoningOutputError):
@@ -143,7 +151,7 @@ async def _call_model(model: str, messages: list[dict[str, str]], max_tokens: in
     return CompletionResult(
         content=content,
         model_requested=model,
-        model_actual=model,
+        model_actual=_model_from_payload(response) or model,
         input_tokens=(getattr(usage, "prompt_tokens", 0) or 0) if usage else 0,
         output_tokens=(getattr(usage, "completion_tokens", 0) or 0) if usage else 0,
         total_tokens=(getattr(usage, "total_tokens", 0) or 0) if usage else 0,
@@ -218,6 +226,7 @@ async def stream_complete(
 
             content_parts: list[str] = []
             usage = None
+            resolved_model = model
             try:
                 stream = await _client.chat.completions.create(
                     model=model,
@@ -227,6 +236,9 @@ async def stream_complete(
                     stream_options={"include_usage": True},
                 )
                 async for event in stream:
+                    event_model = _model_from_payload(event)
+                    if event_model:
+                        resolved_model = event_model
                     if event.usage is not None:
                         usage = event.usage
                     if not event.choices:
@@ -249,7 +261,7 @@ async def stream_complete(
                     result=CompletionResult(
                         content=content,
                         model_requested=pair.primary,
-                        model_actual=model,
+                        model_actual=resolved_model,
                         input_tokens=(getattr(usage, "prompt_tokens", 0) or 0) if usage else 0,
                         output_tokens=(getattr(usage, "completion_tokens", 0) or 0) if usage else 0,
                         total_tokens=(getattr(usage, "total_tokens", 0) or 0) if usage else 0,
